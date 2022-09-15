@@ -1,0 +1,623 @@
+---
+title: "DataPreprocessing August2022"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE} 
+#knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+# loading libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(skimr)
+library(caret)
+library(ComplexHeatmap)
+library(ggstatsplot)
+```
+
+# Functions 
+### select.only.first.visit fundtion definistion
+```{r select.only.first.visit function}
+#Selecting unique sbj based on visit date============================================================================================================================================================
+#input: data: a data frame; 
+#"index_for_unique_selection": an columnwise index to contain unique value after running this finction (like sbj ID); 
+#"index_to_sort_based_on": an columnwise index (like date)
+#output: the data which contains only those rows with the lower values for column index (usually it is a date)
+select.only.first.visit <- function(data, index_for_unique_selection, index_to_sort_based_on)
+{
+  data <- data[order(data[,index_for_unique_selection], data[,index_to_sort_based_on]),] #sorting based on two columns (for example the first is subject ID and the second one is the date)
+  up_loop <- length(data[,index_for_unique_selection])
+  up_loop <- up_loop -1
+  index_vector <- c(TRUE)
+  for (i in c(1:up_loop)) 
+  {
+    index_vector <- c(index_vector, data[,index_for_unique_selection][i] != data[,index_for_unique_selection][i+1])
+    
+  }
+  
+  data_clean <- data[index_vector, ]
+  #printing some statistics about the result:
+  no_of_original_record <- dim(data)[1]
+  no_of_final_record <- dim(data_clean)[1]
+  print("No. of removed records:")
+  print(no_of_original_record - no_of_final_record)
+  print("Poroportion of the data which returened: ")
+  print(no_of_final_record/no_of_original_record)
+  return(data_clean)    
+}
+```
+### extract.the.most.recent.clinical.measures
+```{r extract.the.most.recent.clinical.measures}
+################################################################################
+#Description=======
+#This function selects the most recent scores (scores from the last visit for each subject or outcome scores) for a set of given clinical measures. These cinicals scores shoyuld be columns in the given data frame.
+################################################################################
+#INPUT====
+#"clinical.score.df": a data frame from the selected clinical measuress
+#The first col is subject ID and for each clinical measures we have five columns corresponding to the five time points
+#(maximum five visits data we have for each subject)
+#"No.of.clinical.measures": Number of clinical measures, so the number of columns in the "clinical.score.df" should be:
+#"No.of.clinical.measures"*5 + 1
+
+#NOTE!=======
+#"SubjectID" should be a column in the "clinical.score.df"
+
+################################################################################
+#OUTPUT====
+#"clinical.score.df.most.recent.score.Final" is a df. which contains the most recent score 
+#for each of the clinical measures for each subject
+################################################################################
+#function definition========
+extract.the.most.recent.clinical.measures <- 
+  function(clinical.score.df, No.of.clinical.measures)
+  {
+    
+   # clinical.score.df = lwr.df.selected.cols
+  #  No.of.clinical.measures = No.of.clinical.measures
+    #main====
+    clinical.score.df [clinical.score.df == "NULL"] <- NA
+    clinical.score.df.most.recent.score <- 
+      matrix(nrow = nrow(clinical.score.df), ncol = No.of.clinical.measures)
+    clinical.score.df.most.recent.score <- 
+      as.data.frame(clinical.score.df.most.recent.score)
+    #checking the consistency
+    if (((ncol(clinical.score.df)-1)/5)!=No.of.clinical.measures) 
+    {
+      warnings("No.of.clinical.measures is incostistence with:")
+      warnings("each clinical measures should havd five time points")
+      return()
+    }
+    #The first col is subject ID
+    #each five consec. cols show the five time points for one clincial measure 
+    for (clinical.index in seq(1, No.of.clinical.measures*5,5)+1) 
+    {
+     
+      name.4.this.measure <- 
+        paste(colnames(clinical.score.df)[clinical.index],".Most.Recent", sep = "")
+      
+      clinical.No <- 
+        floor((clinical.index/5)+1)
+      colnames(clinical.score.df.most.recent.score)[clinical.No] <- 
+        name.4.this.measure
+      #for each subject find the most recent clinical score
+      for (subject.index in c(1:nrow(clinical.score.df))) 
+      {
+        #finding the las non NA value in the five time points for this subject
+        indx.4.most.recent <- 
+          max(which(!is.na(clinical.score.df[subject.index,c(clinical.index:(clinical.index+4))])))
+        if (indx.4.most.recent == -Inf) 
+        {
+          most.recent.clinical.value <- NA
+        }else
+        {
+          most.recent.clinical.value <-
+            clinical.score.df[subject.index,(clinical.index + indx.4.most.recent - 1)]
+        }
+        clinical.score.df.most.recent.score[subject.index,clinical.No] <- 
+          as.numeric(most.recent.clinical.value)
+      }
+    }
+    
+    clinical.score.df.most.recent.score.Final <- 
+      cbind(SubjectID = clinical.score.df$SubjectID, 
+          clinical.score.df.most.recent.score)
+    
+    return(clinical.score.df.most.recent.score.Final)
+  }
+```
+### select.the.defauly.iportant.parameters
+```{r selecting the default important measures}
+################################################################################
+#Description=======
+#This function selects the follwoing clinical measures as the most important measures by default and also add columns for the most recent scores (scores from the last visit for each subject or outcome scores):
+#1- ados_CoSoTotRRTot 
+#2- vine_AdapBehav_DomStd
+#3- mullen_ELT
+#4- mullen_ELC_Std
+#5- mullen_RLT
+#6- DxJ_DxGroup
+#7- ados_ageMo
+################################################################################
+#INPUT====
+#"lwr.df": a data lwr (long wide report) data frame 
+################################################################################
+#OUTPUT====
+#"clinical.score.df.most.recent.score.Final" is a df. which contains the most recent score 
+#for each of the clinical measures for each subject
+################################################################################
+#function definition========
+select.the.defauly.iportant.parameters <- 
+  function(lwr.df)
+  {
+    library(dplyr)
+    lwr.df$SubjectID <- 
+  toupper(lwr.df$subjectid)
+    #main====
+  #a name vector of the default important clinical measures
+  clinical.measures.name.vctr <- 
+    c("ados_CoSoTotRRTot", 
+      "vine_AdapBehav_DomStd",
+      "mullen_ELT",
+      "mullen_ELC_Std",
+      "mullen_RLT",
+      "DxJ_DxGroup",
+      "ados_ageMo"
+      )
+  #generating all five names for each measures=====
+  clinical.measures.name.vctr.five.visits <- c()
+  for (clincal.measure.name in clinical.measures.name.vctr) 
+  {
+    #adding sufficies "_1", "_2", ...(this the lwr format)
+    for (i in c(1:5)) 
+    {
+      new.name <- 
+        paste(clincal.measure.name, "_", as.character(i), sep = "")
+      #adding to the final name vector
+      clinical.measures.name.vctr.five.visits <- 
+        c(clinical.measures.name.vctr.five.visits, new.name)
+    }
+  }
+  #Adding SubjectID to the final name vector
+  clinical.measures.name.vctr.five.visits <- 
+    c("SubjectID", clinical.measures.name.vctr.five.visits)
+ #selecting the corresponding cols from lwr df
+  #replacing "NULL" with NA
+  lwr.df [lwr.df == "NULL"] <- NA
+  lwr.df.selected.cols <- 
+    lwr.df [,c(colnames(lwr.df) %in% clinical.measures.name.vctr.five.visits)]
+  #a vector of column-wise indices for selecting the final variables in the appropriate order
+  col.indx.vctr.correct.order <- c()
+  for (i in c(1:length(clinical.measures.name.vctr.five.visits))) 
+  {
+    indx <-
+    which(colnames(lwr.df.selected.cols) == clinical.measures.name.vctr.five.visits[i])
+    col.indx.vctr.correct.order <-
+      c(col.indx.vctr.correct.order, indx)
+  }
+  
+  #reordernig the columns to be in the correct order
+  lwr.df.selected.cols <- 
+    lwr.df.selected.cols[,col.indx.vctr.correct.order]
+  no.of.cols <- 
+    ncol(lwr.df.selected.cols)
+  No.of.clinical.measures <-
+    (no.of.cols - 1 ) / 5 
+  lwr.df.selected.cols.outcomes <- 
+    extract.the.most.recent.clinical.measures(clinical.score.df = lwr.df.selected.cols, No.of.clinical.measures = No.of.clinical.measures)
+ lwr.df.selected.cols.outcomes.and.selected.cols <- 
+   merge(x = lwr.df.selected.cols.outcomes, 
+        y = lwr.df.selected.cols, 
+        by = "SubjectID")
+ return(lwr.df.selected.cols.outcomes.and.selected.cols)
+  }
+```
+
+## ET Data
+### Reading the ET data
+```{r reading the data}
+#for each ET we have three features pcntFixationGeo, Sacc/secGeo, Sacc/secSoc
+#and for the two motheres I added pcntfixation for face and eyes
+#NOTE: Column names in the original input data have been modified to contain the corresponding et test name
+ET1.GeoPref <- 
+  read.csv("./Data/Final GeoPref MasterSheet.csv")
+dim(ET1.GeoPref)#3391   42
+ET2.Complex <- 
+  read.csv("./Data/Complex Social GeoPref Mastersheet.csv")
+dim(ET2.Complex)#586  33
+ET3.Outdoor <- 
+  read.csv("./Data/Outdoor Peer Play Mastersheet.csv")
+dim(ET3.Outdoor)#753  34
+ET4.MtrTraffic <- 
+  read.csv("./Data/QL Motherese vs Traffic Master Sheet.csv")
+dim(ET4.MtrTraffic)#1109   52
+ET5.MtrTechno <- 
+  read.csv("./Data/LK Motherese vs Techno Space Master Sheet.csv")
+dim(ET5.MtrTechno)#962  46
+
+#making all subject ID as upper case=======
+ET1.GeoPref$SubjectID <-
+  toupper(ET1.GeoPref$SubjectID)
+
+ET2.Complex$SubjectID <-
+  toupper(ET2.Complex$SubjectID)
+
+ET3.Outdoor$SubjectID <-
+  toupper(ET3.Outdoor$SubjectID)
+
+ET4.MtrTraffic$SubjectID <-
+  toupper(ET4.MtrTraffic$SubjectID)
+
+ET5.MtrTechno$SubjectID <-
+  toupper(ET5.MtrTechno$SubjectID)
+
+# [1] 3391    5
+# [1] 586   5
+# [1] 753   5
+# [1] 1109    7
+# [1] 962   7
+# [1] "SubjectID"          "GeoPrefPcntFixGeo"   "GeoPrefSacPerSecGeo"
+# [4] "GeoPrefSacPerSecSoc" "Age.at.ET"   
+
+```
+
+### Removing logitudinal data (selecting only first visit for each subjects)
+
+```{r Selecting only first visits}
+#the last column of each ET df is the age
+#"select.only.first.visit" function returns a data frame which contains only those rows with the lower values for the column index (usually it is age) see fucntion implementation for details.
+ET1.GeoPref.Uniqe <- 
+  select.only.first.visit(data = ET1.GeoPref, 
+                        index_for_unique_selection = 1, 
+                        index_to_sort_based_on = ncol(ET1.GeoPref)
+                          )
+ET2.Complex.Uniqe <- 
+  select.only.first.visit(data = ET2.Complex, 
+                        index_for_unique_selection = 1, 
+                        index_to_sort_based_on = ncol(ET2.Complex)
+                          )
+ET3.Outdoor.Uniqe <- 
+  select.only.first.visit(data = ET3.Outdoor, 
+                        index_for_unique_selection = 1, 
+                        index_to_sort_based_on = ncol(ET3.Outdoor)
+                          )
+ET4.MtrTraffic.Uniqe <- 
+  select.only.first.visit(data = ET4.MtrTraffic, 
+                        index_for_unique_selection = 1, 
+                        index_to_sort_based_on = ncol(ET4.MtrTraffic)
+                          )
+ET5.MtrTechno.Uniqe <- 
+  select.only.first.visit(data = ET5.MtrTechno, 
+                        index_for_unique_selection = 1, 
+                        index_to_sort_based_on = ncol(ET5.MtrTechno)
+                          )
+#See how removing logitudinal affected the total number of subjects in each et test:
+# [1] "No. of removed records:"
+# [1] 1061
+# [1] "Shrinkage percent: "
+# [1] 0.6871129
+# [1] "No. of removed records:"
+# [1] 106
+# [1] "Shrinkage percent: "
+# [1] 0.8191126
+# [1] "No. of removed records:"
+# [1] 153
+# [1] "Shrinkage percent: "
+# [1] 0.7968127
+# [1] "No. of removed records:"
+# [1] 271
+# [1] "Shrinkage percent: "
+# [1] 0.7556357
+# [1] "No. of removed records:"
+# [1] 207
+# [1] "Shrinkage percent: "
+# [1] 0.7848233
+
+```
+
+### UpsetPlots
+#### Before logitudinal Removal
+
+```{r UpsetPlot Before logitudinal Removal}
+
+
+#list preparation ========
+all.ET.for.UpSet.WithLongit <- 
+  list(ET1.GeoPref = ET1.GeoPref$SubjectID,
+       ET2.Complex = ET2.Complex$SubjectID,
+       ET3.Outdoor = ET3.Outdoor$SubjectID,
+       ET4.MtrTraffic = ET4.MtrTraffic$SubjectID,
+       ET5.MtrTechno = ET5.MtrTechno$SubjectID)
+
+list.of.sets <- 
+  all.ET.for.UpSet.WithLongit
+low.color = "green"
+high.color = "red"
+
+degree.4.upset.lower.bound <- 1
+degree.4.upset.upper.bound <- 5
+
+
+my.palette <- colorRampPalette(c(low.color,high.color), alpha=TRUE)
+ET.comb.matrix <- make_comb_mat(list.of.sets, mode = "intersect")
+pdf("./Viz/UpsetPlotWithLong.pdf")
+UpSet(ET.comb.matrix, #adding colors
+      comb_col = my.palette(5)[comb_degree(ET.comb.matrix)], #adding numbers
+      top_annotation = upset_top_annotation(ET.comb.matrix, add_numbers = TRUE),
+      right_annotation = upset_right_annotation(ET.comb.matrix, add_numbers = TRUE))
+dev.off()
+
+```
+
+#### After logitudinal Removal
+Results should be the same.
+
+```{r UpsetPlot After logitudinal Removal}
+#list preparation ========
+all.ET.for.UpSet.WithLongit <- 
+  list(ET1.GeoPref = ET1.GeoPref.Uniqe$SubjectID,
+       ET2.Complex = ET2.Complex.Uniqe$SubjectID,
+       ET3.Outdoor = ET3.Outdoor.Uniqe$SubjectID,
+       ET4.MtrTraffic = ET4.MtrTraffic.Uniqe$SubjectID,
+       ET5.MtrTechno = ET5.MtrTechno.Uniqe$SubjectID)
+
+list.of.sets <- 
+  all.ET.for.UpSet.WithLongit
+low.color = "green"
+high.color = "red"
+
+degree.4.upset.lower.bound <- 1
+degree.4.upset.upper.bound <- 5
+
+
+my.palette <- colorRampPalette(c(low.color,high.color), alpha=TRUE)
+ET.comb.matrix <- make_comb_mat(list.of.sets, mode = "intersect")
+p <- 
+  UpSet(ET.comb.matrix, #adding colors
+          comb_col = my.palette(5)[comb_degree(ET.comb.matrix)], #adding numbers
+          top_annotation = upset_top_annotation(ET.comb.matrix, add_numbers = TRUE),
+          right_annotation = upset_right_annotation(ET.comb.matrix, add_numbers = TRUE))
+
+pdf("./Viz/UpsetPlotWithOutLong.pdf")
+p
+dev.off()
+
+#UpSet for intersect
+p
+
+ET.comb.matrix.union <- make_comb_mat(list.of.sets, mode = "union")
+#UpSet for union
+p <- 
+  UpSet(ET.comb.matrix.union, #adding colors
+        comb_col = my.palette(5)[comb_degree(ET.comb.matrix.union)], #adding numbers
+        top_annotation = upset_top_annotation(ET.comb.matrix.union, add_numbers = TRUE),
+        right_annotation = upset_right_annotation(ET.comb.matrix.union, add_numbers = TRUE))
+
+pdf("./Viz/UpsetPlotWithOutLong.union.pdf")
+p
+dev.off()
+
+p
+
+
+
+```
+
+
+### Merging all five ET tests
+
+```{r Merging all five ET tests, warning=FALSE}
+#Five ET tests' data frames (after removing long. data):
+# ET1.GeoPref.Uniqe
+# ET2.Complex.Uniqe
+# ET3.Outdoor.Uniqe
+# ET4.MtrTraffic.Uniqe
+# ET5.MtrTechno.Uniqe
+#In all five ET tests "SubjectID" shows is the prim. key
+
+#merging======
+ET1.ET2.Merged.Uniqe <- 
+  merge(x = ET1.GeoPref.Uniqe, y = ET2.Complex.Uniqe, by = "SubjectID", all = TRUE)
+dim(ET1.ET2.Merged.Uniqe)
+ET3.ET4.Merged.Uniqe <- 
+  merge(x = ET3.Outdoor.Uniqe, y = ET4.MtrTraffic.Uniqe, by = "SubjectID", all = TRUE)
+dim(ET3.ET4.Merged.Uniqe)
+ET1.ET2.ET3.ET4.Merged <- 
+  merge(x = ET1.ET2.Merged.Uniqe, y = ET3.ET4.Merged.Uniqe, by = "SubjectID", all = TRUE)
+dim(ET1.ET2.ET3.ET4.Merged)
+ET1.ET2.ET3.ET4.ET5.Merged <- 
+  merge(x = ET1.ET2.ET3.ET4.Merged, y = ET5.MtrTechno.Uniqe, by = "SubjectID", all = TRUE)
+dim(ET1.ET2.ET3.ET4.ET5.Merged)
+#checking =====
+str(ET1.ET2.ET3.ET4.ET5.Merged)
+#There were 17 values in these columns including non numeric values (e.g. "UNKNOWN", "#VALUE!", "#DIV/0!") so I deciced to remove those in the original input files and rerun the above analysis
+
+skim(ET1.ET2.ET3.ET4.ET5.Merged)
+#First ten rows of the data 
+knitr::kable(ET1.ET2.ET3.ET4.ET5.Merged[1:10, ], caption = 'First ten rows of the merged ET data ')
+```
+
+
+## Other Clinical Data
+
+### Rading the most updated LWR
+
+```{r Rading LWR}
+LWR.Updated.August2022 <- 
+  read.csv("./Data/LWR_for_ET_Index_08.22.2022.csv")
+dim(LWR.Updated.August2022)
+#checking the dxj 
+table(LWR.Updated.August2022$recentDxJ_dxCode)
+#converting all subject IDs ti upper case to be consistent with ET datasets
+LWR.Updated.August2022$SubjectID <- 
+  toupper(LWR.Updated.August2022$subjectid)
+```
+
+
+```{r Selecting the important columns, message=FALSE, warning=FALSE}
+LWR.Updated.August2022.SelectedCols.andOutComeScores <- 
+  select.the.defauly.iportant.parameters(lwr.df = LWR.Updated.August2022)
+dim(LWR.Updated.August2022)
+dim(LWR.Updated.August2022.SelectedCols.andOutComeScores)
+
+#adding some more columns to the selected cols including father_age, mother_age, gestation_weeks and parent questions
+LWR.Updated.August2022.mtr.ftr.gest.wee.sib.cols <- 
+LWR.Updated.August2022 %>%
+  select(SubjectID,
+         gender,
+         father_age, 
+         mother_age, 
+         gestation_weeks, 
+         sibs_with_ASD,
+         Q12PointObj = Q12_answer_1,
+         Q20WordUndCount = Q20_answer_1,
+         Q22ObjUseCount = Q22_answer_1,
+         Q2ToysLook = Q2_answer_1,
+         Q4PointLook = Q4_answer_1,
+         Q9GiveObj = Q9_answer_1,
+         Q10ShowObj = Q10_answer_1,
+         Concerns = concern_1,
+         Q19.NameResp = Q19_answer_1,
+         recentDxJ_dxCode
+         )
+#reading CSBS data
+csbs.all.questions <- 
+  read.csv("./Data/ep_CSBS_Merged_4_numericalStatistical_analysis.csv")
+dim(csbs.all.questions)
+#selecting questions that showed sig. diff. between ASD, Delay and TD groups
+csbs.Important.questions <- 
+  csbs.all.questions %>%
+    select(SubjectID = subjectid, Q12.PointObj, Q20.WordUndCount, Q22.ObjUseCount, Concerns, Q02.ToysLook, Q04.PointLook, Q09.GiveObj, Q10.ShowObj, Q19.NameResp)
+dim(csbs.Important.questions)
+```
+
+Merging the LWR subet with integrated ET dataset
+
+```{r merging}
+#adding Selected important clinical measures and outcome scores====
+ET1.ET2.ET3.ET4.ET5.Merged.SelectedCols.andOutComeScores <- 
+  merge(x = ET1.ET2.ET3.ET4.ET5.Merged, 
+      y = LWR.Updated.August2022.SelectedCols.andOutComeScores, by = "SubjectID", all.x = TRUE
+      )
+dim(ET1.ET2.ET3.ET4.ET5.Merged)
+dim(ET1.ET2.ET3.ET4.ET5.Merged.SelectedCols.andOutComeScores)
+#adding csbs.Important.questions====
+ET1.ET2.ET3.ET4.ET5.Merged.SelectedCols.andOutComeScores.CSBS <- 
+  merge(x = ET1.ET2.ET3.ET4.ET5.Merged.SelectedCols.andOutComeScores, 
+      y = csbs.Important.questions, by = "SubjectID", all.x = TRUE
+      )
+dim(ET1.ET2.ET3.ET4.ET5.Merged.SelectedCols.andOutComeScores)
+dim(ET1.ET2.ET3.ET4.ET5.Merged.SelectedCols.andOutComeScores.CSBS)
+
+#adding father age, mother age and gest. week====
+ET1.ET2.ET3.ET4.ET5.Merged.SelectedCols.andOutComeScores.CSBS.gestAge <- 
+  merge(x = ET1.ET2.ET3.ET4.ET5.Merged.SelectedCols.andOutComeScores.CSBS, 
+      y = LWR.Updated.August2022.mtr.ftr.gest.wee.sib.cols, by = "SubjectID", all.x = TRUE
+      )
+dim(ET1.ET2.ET3.ET4.ET5.Merged.SelectedCols.andOutComeScores.CSBS)
+dim(ET1.ET2.ET3.ET4.ET5.Merged.SelectedCols.andOutComeScores.CSBS.gestAge)
+
+```
+
+```{r}
+Final.ET.Dataset.AllDetails <-
+  ET1.ET2.ET3.ET4.ET5.Merged.SelectedCols.andOutComeScores.CSBS.gestAge
+knitr::kable(Final.ET.Dataset.AllDetails[1:10, ], caption = 'First ten rows of the merged ET data ')
+#DOUBLE CHECK With the LWR for some random rows
+skim(Final.ET.Dataset.AllDetails)
+```
+
+Making NA values cocnsitent thought the data frame.
+```{r }
+#making NA values cocnsitent
+Final.ET.Dataset.AllDetails[Final.ET.Dataset.AllDetails == "N/A"] <-
+  NA
+Final.ET.Dataset.AllDetails[Final.ET.Dataset.AllDetails == "NULL"] <-
+  NA
+dim(Final.ET.Dataset.AllDetails)
+knitr::kable(Final.ET.Dataset.AllDetails[1:10, ], caption = 'First ten rows of the merged ET data ')
+skim(Final.ET.Dataset.AllDetails)
+```
+
+
+
+
+```{r picking the final data frame}
+save(Final.ET.Dataset.AllDetails,
+     file = "./Results/Final.ET.Dataset.AllDetails")
+```
+
+
+```{r}
+Final.ET.Dataset.AllDetails %>%
+  select(father_age, mother_age, recentDxJ_dxCode) %>%
+  group_by(recentDxJ_dxCode)%>%
+    summarise(father_age.mean = mean(na.omit(father_age)), 
+              mother_age.mean = mean(na.omit(mother_age)))
+
+mean(Final.ET.Dataset.AllDetails$father_age)
+
+Final.ET.Dataset.AllDetails$mother_age <- 
+  as.numeric(Final.ET.Dataset.AllDetails$mother_age)
+Final.ET.Dataset.AllDetails$father_age <- 
+  as.numeric(Final.ET.Dataset.AllDetails$father_age)
+
+typeof(Final.ET.Dataset.AllDetails$mother_age)
+table(Final.ET.Dataset.AllDetails$father_age)
+typeof(Final.ET.Dataset.AllDetails$father_age)
+range(na.omit(Final.ET.Dataset.AllDetails$father_age))
+
+
+typeof(Final.ET.Dataset.AllDetails$gestation_weeks)
+table(Final.ET.Dataset.AllDetails$gestation_weeks)
+
+Final.ET.Dataset.AllDetails$gestation_weeks[Final.ET.Dataset.AllDetails$gestation_weeks == "not available"] <- NA
+
+Final.ET.Dataset.AllDetails$gestation_weeks <-
+  as.numeric(Final.ET.Dataset.AllDetails$gestation_weeks)
+
+tmp.Table <- 
+  Final.ET.Dataset.AllDetails %>%
+    select(father_age, mother_age, gestation_weeks, recentDxJ_dxCode) %>%
+    group_by(recentDxJ_dxCode)%>%
+      summarise(father_age.mean = mean(na.omit(father_age)), father_age.sd = sd(na.omit(father_age)),
+                mother_age.mean = mean(na.omit(mother_age)), mother_age.sd = sd(na.omit(mother_age)),
+                gestation_weeks.mean = mean(na.omit(gestation_weeks)),
+                gestation_weeks.sd = sd(na.omit(gestation_weeks))
+                )
+
+typeof(Final.ET.Dataset.AllDetails$Q02.ToysLook)
+
+csbs.Q.Summarized <- 
+  Final.ET.Dataset.AllDetails %>%
+    select(Q02.ToysLook, 
+           Q12.PointObj, 
+           Q22.ObjUseCount, 
+           Q20.WordUndCount, 
+           Q04.PointLook, 
+           Q09.GiveObj, 
+           Q10.ShowObj,
+           Q10ShowObj,
+           Q19.NameResp.x,
+           recentDxJ_dxCode) %>%
+    group_by(recentDxJ_dxCode)%>%
+      summarise(
+        Q02.ToysLook.mean = mean(na.omit(Q02.ToysLook)), 
+        Q12.PointObj.mean = mean(na.omit(Q12.PointObj)), 
+        Q22.ObjUseCount.mean = mean(na.omit(Q22.ObjUseCount)), 
+        Q20.WordUndCount.mean = mean(na.omit(Q20.WordUndCount)), 
+        Q04.PointLook.mean = mean(na.omit(Q04.PointLook)), 
+        Q09.GiveObj.mean = mean(na.omit(Q09.GiveObj)),
+        Q19.NameResp.mean = mean(na.omit(Q19.NameResp.x)) 
+                )
+
+```
+
+
+
+
+
+
+

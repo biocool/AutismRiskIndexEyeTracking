@@ -1,0 +1,556 @@
+---
+title: Spliting the ET Dataset in a balanced way into Discovery (Train+Validation) and IndepTest
+  sets
+output:
+  html_document:
+    df_print: paged
+---
+
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+## Function definition 
+#### "convert.df.2.ggplot.friendly" function
+```{r convert.df.2.ggplot.friendly}
+################################################################################
+#Description=======
+#This function puts all columns that are not "fixed.characteristics" in a single column and adds
+#a new column to show each mesurement values belong to which measurement type.
+#(for example "diagnosis" is a fixed.characteristics or any 
+#other measures that we are not going do startify subjects based on those and are note being used in "facet")
+################################################################################
+#INPUT====
+#"df" a data frame (the first col is SubjectID), 
+#"no.of.fixed.characteristics" is the number of cols that show the clinical characteristics
+#which we want to repeat them for all Mesearements (e.g. Sex, Dxj, ....). By default these fixed.characteristics MUST be the most right cols
+################################################################################
+#OUTPUT====
+#"ggplot.friendly.df": is the converted version of the imput which is very friendly for ggplot.
+################################################################################
+#function definition========
+convert.df.2.ggplot.friendly <- function(df, no.of.fixed.characteristics)
+{
+  library(dplyr)
+  no.of.cols <- 
+    ncol(df)
+  #the final df would be 2-column df
+  #the first column shows that subjectIDs and the second one shows the measurement (e.g. clinical metrics or eye tracking feature etc.)
+  ggplot.friendly.df <- 
+    as.data.frame(matrix(ncol = 3 + no.of.fixed.characteristics, nrow = 1))
+  #the "fixed.characteristics.col.name" vctr shows the colnames for those "fixed.characteristics"
+  if (no.of.fixed.characteristics != 0 ) 
+  {
+    fixed.characteristics.col.name  <- 
+      colnames(df)[c((no.of.cols - no.of.fixed.characteristics + 1):no.of.cols)]
+    colnames(ggplot.friendly.df) <- 
+      c("SubjectID", fixed.characteristics.col.name, "MesearementValue", "Mesearement")
+  }else
+  {
+    fixed.characteristics.col.name  <- NA
+    colnames(ggplot.friendly.df) <- 
+      c("SubjectID", "MesearementValue", "Mesearement")
+  }
+  
+  no.of.measurements <- 
+    no.of.cols - no.of.fixed.characteristics - 1 # -1==> SubjectID 
+  measuresment.name.vctr <-
+    colnames(df)[c(2:(no.of.measurements+1))]
+  for (j in c(2:(no.of.measurements+1))) 
+  {
+    #selecting the related cols
+    if (no.of.fixed.characteristics != 0 ) 
+    {
+      df.correspond.to.current.measurement <-
+        df[,c(1,c((no.of.cols - no.of.fixed.characteristics + 1):no.of.cols),j)]
+    }else
+    {
+      df.correspond.to.current.measurement <-
+        df[,c(1,j)]
+    }
+    
+    #adding measurement name as last column
+    df.correspond.to.current.measurement$Mesearement <-
+      rep(measuresment.name.vctr[j-1], 
+          nrow(df.correspond.to.current.measurement))
+    colnames(df.correspond.to.current.measurement) <- 
+      colnames(ggplot.friendly.df)
+    ggplot.friendly.df <- 
+      rbind(ggplot.friendly.df , df.correspond.to.current.measurement)
+  }
+  
+  #remoding the first NA row 
+  ggplot.friendly.df <-
+    ggplot.friendly.df[-1,]
+  return(ggplot.friendly.df)
+}
+
+```
+
+## loading libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(skimr)
+library(caret)
+library(ComplexHeatmap)
+library(ggstatsplot)
+library(corrplot)
+library(knitr)
+library(BalancedSampling) 
+library(rstatix)
+library(ggpubr)
+```
+
+## Splitting the data
+Here we are trying to select a subset of the original dataset in such way that we have the same % of missing values whithin each ET test. Also, each combincation of the ET tests should have the same propotional size comparing to the original dataset. We are going to use the "upset plot" related functions from the "ComplexHeatmap" package to do this.
+
+### Original Data Set 
+```{r loading the data set}
+load(file = "./Results/Final.ET.Dataset.AllDetails.OnlyET.Features")
+dim(Final.ET.Dataset.AllDetails.OnlyET.Features)
+kable(skim(Final.ET.Dataset.AllDetails.OnlyET.Features))
+```
+
+##### Upset plot and size of all 31 combinations of ET tests
+```{r Upset plot and size of all 31 combinations of ET tests}
+#making a list of subject IDs for constructing the all possible combination intersect sets=========
+all.ET.for.UpSet <- 
+  list(ET1.GeoPref = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features$GeoPrefPcntFixGeo)] ,
+       ET2.Complex = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features$CmplxPcntFixGeo)],
+       ET3.Outdoor = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features$OutdoorPcntFixGeo)],
+       ET4.MtrTraffic = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features$TrafficPcntFixTraffic)],
+       ET5.MtrTechno = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features$TechnoPcntFixTechno)])
+
+#Tuning the colors
+list.of.sets <- 
+  all.ET.for.UpSet
+low.color = "steelblue1"
+high.color = "maroon4"
+#Tuning the degree of the intersection to plot
+degree.4.upset.lower.bound <- 1
+degree.4.upset.upper.bound <- 5
+#making the color palette as a spectrum ragarding the "low.color" and "high.color"
+my.palette <- colorRampPalette(c(low.color,high.color), alpha=TRUE)
+#calculating the combination matrix
+ET.comb.matrix <- make_comb_mat(list.of.sets, mode = "intersect")
+
+#plotting
+UpSet(ET.comb.matrix, #adding colors
+      comb_col = my.palette(5)[comb_degree(ET.comb.matrix)], #adding numbers
+      top_annotation = upset_top_annotation(ET.comb.matrix, add_numbers = TRUE),
+      right_annotation = upset_right_annotation(ET.comb.matrix, add_numbers = TRUE))
+```
+
+
+### Random indep subset
+##### Upset plot and size of all 31 combinations of ET tests in the random subset
+
+```{r Upset plot and size of all 31 combinations of ET tests in the random subset}
+#selecting a random subset of the subjects=======
+total.no.of.subjects <- 
+  length(rownames(Final.ET.Dataset.AllDetails.OnlyET.Features))
+#making the indep test dataset selection reproducible 
+set.seed(11596156)
+rnd.row.indx <- 
+  sample(x = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features), 
+       size = floor(total.no.of.subjects*0.2) , replace = FALSE)
+Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset <-
+  Final.ET.Dataset.AllDetails.OnlyET.Features[rnd.row.indx, ]
+#making a list of subject IDs for constructing the all possible combination intersect sets=====
+all.ET.for.UpSet.rnd.subset <- 
+  list(ET1.GeoPref = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset$GeoPrefPcntFixGeo)] ,
+       ET2.Complex = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset$CmplxPcntFixGeo)],
+       ET3.Outdoor = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset$OutdoorPcntFixGeo)],
+       ET4.MtrTraffic = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset$TrafficPcntFixTraffic)],
+       ET5.MtrTechno = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset$TechnoPcntFixTechno)])
+
+#Tuning the colors
+list.of.sets.rnd.subset <- 
+  all.ET.for.UpSet.rnd.subset
+low.color = "yellow3"
+high.color = "deeppink3"
+#Tuning the degree of the intersection to plot
+degree.4.upset.lower.bound <- 1
+degree.4.upset.upper.bound <- 5
+#making the color palette as a spectrum ragarding the "low.color" and "high.color"
+my.palette <- colorRampPalette(c(low.color,high.color), alpha=TRUE)
+#calculating the combination matrix
+ET.comb.matrix.rnd.subset <- make_comb_mat(list.of.sets.rnd.subset, mode = "intersect")
+
+UpSet(ET.comb.matrix.rnd.subset, #adding colors
+      comb_col = my.palette(5)[comb_degree(ET.comb.matrix.rnd.subset)], #adding numbers
+      top_annotation = upset_top_annotation(ET.comb.matrix.rnd.subset, add_numbers = TRUE),
+      right_annotation = upset_right_annotation(ET.comb.matrix.rnd.subset, add_numbers = TRUE))
+#Checking the selected proportion of each intersections in the IndepTest datasets
+comb_size(ET.comb.matrix.rnd.subset)/comb_size(ET.comb.matrix)
+comb_size(ET.comb.matrix.rnd.subset[comb_degree(ET.comb.matrix.rnd.subset)== 1])/comb_size(ET.comb.matrix[comb_degree(ET.comb.matrix)== 1])
+#Histogram of the proportion of intersections in the IndepTest datasets
+hist(comb_size(ET.comb.matrix.rnd.subset)/comb_size(ET.comb.matrix), main = "Proportion of each intersections in the IndepTest datasets", col = "deeppink", border = "darkblue")
+
+
+```
+
+pickling the indep test set
+```{r pickling the indep test set}
+#20% random subset as the indep test set
+save(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset,
+     file = "./Results/Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset")
+dim(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset)
+dim(Final.ET.Dataset.AllDetails.OnlyET.Features)
+Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet <- 
+  Final.ET.Dataset.AllDetails.OnlyET.Features %>%
+    filter(rownames(Final.ET.Dataset.AllDetails.OnlyET.Features)%in%rownames(Final.ET.Dataset.AllDetails.OnlyET.Features))
+```
+
+
+
+### Discovery dataset
+Selecting discovery dataset
+```{r Selecting discovery dataset}
+Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet <- 
+  Final.ET.Dataset.AllDetails.OnlyET.Features %>% 
+    filter(!rownames(Final.ET.Dataset.AllDetails.OnlyET.Features) %in% rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset))
+#sanity check
+dim(Final.ET.Dataset.AllDetails.OnlyET.Features)
+dim(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet)
+dim(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset)
+#pickling the discovery dataset
+save(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet, 
+     file = "./Results/Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet")
+```
+
+##### Upset plot and size of all 31 combinations of ET tests in the discovery set
+```{r Upset plot and size of all 31 combinations of ET tests in the discovery set}
+#making a list of subject IDs for constructing the all possible combination intersect sets=====
+all.ET.for.UpSet.discovery.subset <- 
+  list(ET1.GeoPref = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet$GeoPrefPcntFixGeo)] ,
+       ET2.Complex = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet$CmplxPcntFixGeo)],
+       ET3.Outdoor = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet$OutdoorPcntFixGeo)],
+       ET4.MtrTraffic = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet$TrafficPcntFixTraffic)],
+       ET5.MtrTechno = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet$TechnoPcntFixTechno)])
+
+#Tuning the colors
+list.of.sets.discovery.subset <- 
+  all.ET.for.UpSet.discovery.subset
+low.color = "yellow3"
+high.color = "deeppink3"
+#Tuning the degree of the intersection to plot
+degree.4.upset.lower.bound <- 1
+degree.4.upset.upper.bound <- 5
+#making the color palette as a spectrum ragarding the "low.color" and "high.color"
+my.palette <- colorRampPalette(c(low.color,high.color), alpha=TRUE)
+#calculating the combination matrix
+ET.comb.matrix.discovery.subset <- make_comb_mat(list.of.sets.discovery.subset, mode = "intersect")
+
+UpSet(ET.comb.matrix.discovery.subset, #adding colors
+      comb_col = my.palette(5)[comb_degree(ET.comb.matrix.discovery.subset)], #adding numbers
+      top_annotation = upset_top_annotation(ET.comb.matrix.discovery.subset, add_numbers = TRUE),
+      right_annotation = upset_right_annotation(ET.comb.matrix.discovery.subset, add_numbers = TRUE))
+
+```
+
+#### Validation dataset
+##### Selecting validation dataset
+
+```{r Selecting validation dataset}
+#selecting a random subset of the subjects in the dicovery set=======
+total.no.of.subjects.in.disc.dataset <- 
+  length(rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet))
+#making the indep test dataset selection reproducible 
+set.seed(115961560)
+#selecting a random 20% subset of the rows 
+rnd.row.indx <- 
+  sample(x = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet), 
+       size = floor(total.no.of.subjects.in.disc.dataset*0.2) , replace = FALSE)
+Final.ET.Dataset.AllDetails.OnlyET.Features.validationSet <-
+  Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet[rnd.row.indx, ]
+#selecting a the remaining rows
+Final.ET.Dataset.AllDetails.OnlyET.Features.TrainingSet <-
+  Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet %>%
+    filter(!(rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet)%in%rnd.row.indx))
+dim(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet)
+dim(Final.ET.Dataset.AllDetails.OnlyET.Features.validationSet)
+dim(Final.ET.Dataset.AllDetails.OnlyET.Features.TrainingSet)
+```
+
+##### Upset plot and size of all 31 combinations of ET tests in the validation set
+```{r Upset plot and size of all 31 combinations of ET tests in the validation set}
+#making a list of subject IDs for constructing the all possible combination intersect sets=====
+all.ET.for.UpSet.validation.subset <- 
+  list(ET1.GeoPref = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.validationSet)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features.validationSet$GeoPrefPcntFixGeo)] ,
+       ET2.Complex = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.validationSet)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features.validationSet$CmplxPcntFixGeo)],
+       ET3.Outdoor = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.validationSet)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features.validationSet$OutdoorPcntFixGeo)],
+       ET4.MtrTraffic = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.validationSet)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features.validationSet$TrafficPcntFixTraffic)],
+       ET5.MtrTechno = rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.validationSet)[!is.na(Final.ET.Dataset.AllDetails.OnlyET.Features.validationSet$TechnoPcntFixTechno)])
+
+#Tuning the colors
+list.of.sets.validation.subset <- 
+  all.ET.for.UpSet.validation.subset
+low.color = "yellow3"
+high.color = "deeppink3"
+#Tuning the degree of the intersection to plot
+degree.4.upset.lower.bound <- 1
+degree.4.upset.upper.bound <- 5
+#making the color palette as a spectrum ragarding the "low.color" and "high.color"
+my.palette <- colorRampPalette(c(low.color,high.color), alpha=TRUE)
+#calculating the combination matrix
+ET.comb.matrix.validation.subset <- make_comb_mat(list.of.sets.validation.subset, mode = "intersect")
+
+UpSet(ET.comb.matrix.validation.subset, #adding colors
+      comb_col = my.palette(5)[comb_degree(ET.comb.matrix.validation.subset)], #adding numbers
+      top_annotation = upset_top_annotation(ET.comb.matrix.validation.subset, add_numbers = TRUE),
+      right_annotation = upset_right_annotation(ET.comb.matrix.validation.subset, add_numbers = TRUE))
+#Checking the selected proportion of each intersections in the IndepTest datasets
+comb_size(ET.comb.matrix.validation.subset)/comb_size(ET.comb.matrix.discovery.subset)
+comb_size(ET.comb.matrix.validation.subset[comb_degree(ET.comb.matrix.validation.subset)== 1])/comb_size(ET.comb.matrix.discovery.subset[comb_degree(ET.comb.matrix.discovery.subset)== 1])
+#Histogram of the proportion of intersections in the IndepTest datasets
+hist(comb_size(ET.comb.matrix.validation.subset)/comb_size(ET.comb.matrix.discovery.subset), main = "Proportion of each intersections in the Validation datasets", col = "yellow4", border = "darkblue")
+```
+
+pickling the validation set
+```{r pickling the validation  set}
+#20% random subset as the indep test set
+save(Final.ET.Dataset.AllDetails.OnlyET.Features.validationSet,
+     file = "./Results/Final.ET.Dataset.AllDetails.OnlyET.Features.validationSet")
+dim(Final.ET.Dataset.AllDetails.OnlyET.Features)
+dim(Final.ET.Dataset.AllDetails.OnlyET.Features.DiscoverySet)
+dim(Final.ET.Dataset.AllDetails.OnlyET.Features.validationSet)
+dim(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset)
+```
+
+pickling the training set
+```{r pickling the Training  set}
+save(Final.ET.Dataset.AllDetails.OnlyET.Features.TrainingSet,
+     file = "./Results/Final.ET.Dataset.AllDetails.OnlyET.Features.TrainingSet")
+```
+
+#Checking the Difference Between Datasets
+
+## Checking the Difference Between Discovery/Indep.Test Datasets Based on All ET Features and Clinical Measures
+Preparing the data
+```{r Preparing the data 1}
+
+load("./Results/Final.ET.Dataset.AllDetails")
+table(Final.ET.Dataset.AllDetails$recentDxJ_dxCode)
+
+#selecting a subset of columns to do undersampling (dro example we don't need all five visit information for ados, mullen ,...)
+colnames(Final.ET.Dataset.AllDetails)
+
+#selecting the variable to check the significant difference between train/test dataset including: eye-tracking features (for all five tests including ET-age), the five most important clinical measures (for both first visit and the most recent visit), gender, dxj, csbs questions
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff <- 
+  Final.ET.Dataset.AllDetails %>%
+  select(c(1:33,38,43,48,53,68:80,91))
+
+#removing the "DxJ_DxGroup_1.Most.Recent"
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff <- 
+  Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff %>%
+  select(-"DxJ_DxGroup_1.Most.Recent")
+str(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff)
+colnames(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff)
+
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff[,c(2:45)] <- 
+  apply(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff[,c(2:45)], 2, as.numeric)
+
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff[,c(47:49)] <- 
+  apply(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff[,c(47:49)], 2, as.numeric)
+str(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff)
+dim(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff)
+#moving the "gender" column to the end to make the dataset ready for input to the convert2ggplotfriendly functoin
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff <- 
+  Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff %>%
+    select(c(1:45,47:49,46,50))
+kable(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff[c(1:10),])
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly<-
+  convert.df.2.ggplot.friendly(df = Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff, no.of.fixed.characteristics = 2)
+str(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly)
+#adding Discovery/Test column=====
+#init by NA
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly$DiscoveryTest <-
+  rep(NA, nrow(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly))
+#assigning "Discovery"/"Test" to the DiscoveryTest column
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly$DiscoveryTest[Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly$SubjectID%in%rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset)] <- "Test"
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly$DiscoveryTest[!(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly$SubjectID%in%rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.rnd.indep.subset))] <- "Discovery"
+table(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly$DiscoveryTest)
+```
+
+```{r picking the data}
+#picking the data
+save(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly,
+     file = "./Results/Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly")
+```
+
+
+
+### Plotting and Stat Tests
+
+
+##### Statistical summary of the features in Discovery/Test datasets
+```{r get_summary_stats}
+kable(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly %>%
+  group_by(Mesearement, DiscoveryTest) %>%
+  get_summary_stats(MesearementValue, type =c("full"))
+)
+```
+
+##### Comapring the difference in clinical measures between train and test datasets (startified by Discovery/Test).
+```{r  facet box plotstartified by Discovery/Test,fig.height = 25, fig.width = 30}
+#pdf("./Viz/ImportantCols4checkingtheDiffV5.pdf", height = 25, width = 30)
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly %>%
+ggplot(aes(x = DiscoveryTest, y = MesearementValue, color = factor(DiscoveryTest), fill = factor(DiscoveryTest))) + 
+  geom_violin(width = 1 , alpha = 0.5) + 
+  geom_boxplot(width = 0.3) + 
+  scale_color_manual(values=c("Test" = "yellow4",
+                               "Discovery" = "purple4") ) +
+  scale_fill_manual(values=c("Test" = "yellow3",
+                               "Discovery" = "purple") )+
+  stat_summary(fun = "mean",
+               geom = "point",
+               color = "red") +
+  stat_compare_means(label = "p.signif", method = "t.test") +
+  facet_wrap(Mesearement~., scales='free') + 
+    theme_bw()
+#dev.off()
+```
+
+##### Comapring the difference in clinical measures between train and test datasets (startified by Discovery/Test & Dxj).
+```{r  facet box plotstartified by Discovery/Test& Dxj, fig.height = 60, fig.width = 40}
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly$recentDxJ_dxCode [Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly$recentDxJ_dxCode!="ASD"] <- 
+  "nonASD"
+#pdf("./Viz/ImportantCols4checkingtheDiffV7.pdf", height = 60, width = 40)
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly %>%
+  filter(!is.na(recentDxJ_dxCode))%>%
+ggplot(aes(x = recentDxJ_dxCode, y = MesearementValue, color = factor(DiscoveryTest), fill = factor(DiscoveryTest))) + 
+  geom_violin(width = 1 , alpha = 0.5) + 
+  geom_boxplot(width = 0.3)  +
+  stat_compare_means(label = "p.signif", method = "t.test") +
+  scale_color_manual(values=c("Test" = "yellow4",
+                               "Discovery" = "purple4") ) +
+  scale_fill_manual(values=c("Test" = "yellow3",
+                               "Discovery" = "purple") )+
+  stat_summary(fun.y=mean,shape=20, col='red', geom='point', position = position_dodge(width = .75))  +
+  facet_wrap(Mesearement + DiscoveryTest ~., scales='free') + 
+    theme_bw()
+#dev.off()
+```
+
+##### grouped_ggbetweenstats Discovery/Test
+```{r  grouped_ggbetweenstats Discovery/Test, fig.height = 25, fig.width = 45}
+#pdf("./Viz/ImportantCols4checkingtheDiffgrouped_ggbetweenstats.pdf", height = 25, width = 45)
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly %>%
+  grouped_ggbetweenstats(
+    x = DiscoveryTest, 
+    y = MesearementValue, 
+    fill = DiscoveryTest, p.adjust.method = "none",
+    grouping.var = Mesearement, xlab = "Discovery/Test")
+#dev.off()
+```
+
+
+
+
+
+
+
+## Checking the Difference Between Discovery/Indep.Test Datasets Based on All ET Features and Clinical Measures
+Preparing the data
+```{r Preparing the data}
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet <- 
+  subset(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly, DiscoveryTest != "Test") 
+dim(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly)
+dim(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet)
+
+#adding Train/Test column=====
+#init by NA
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet$TrainValidation <-
+  rep(NA, nrow(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet))
+#assigning "Train"/"Validation" to the TrainValidation column
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet$TrainValidation[Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet$SubjectID%in%rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.TrainingSet)] <- "Train"
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet$TrainValidation[!(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet$SubjectID%in%rownames(Final.ET.Dataset.AllDetails.OnlyET.Features.TrainingSet))] <- "Validation"
+table(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet$TrainValidation)
+```
+
+```{r picking the data 1}
+#picking the data
+save(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet,
+     file = "./Results/Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet")
+```
+
+
+
+### Plotting and Stat for Validation Dataset
+
+
+##### Statistical summary of the features in Train/Validation datasets
+```{r get_summary_stats 1}
+kable(Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet %>%
+  group_by(Mesearement, TrainValidation) %>%
+  get_summary_stats(MesearementValue, type =c("full"))
+)
+```
+
+##### Comapring the Difference in Clinical Measures Between Train and Validation Datasets (startified by Train/Validation).
+```{r  facet box plotstartified by Train/Validation,fig.height = 25, fig.width = 30}
+#pdf("./Viz/ImportantCols4checkingtheDiffValidation.pdf", height = 25, width = 30)
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet %>%
+ggplot(aes(x = TrainValidation, y = MesearementValue, color = factor(TrainValidation), fill = factor(TrainValidation))) + 
+  geom_violin(width = 1 , alpha = 0.5) + 
+  geom_boxplot(width = 0.3) + 
+  scale_color_manual(values=c("Validation" = "yellow4",
+                               "Train" = "purple4") ) +
+  scale_fill_manual(values=c("Validation" = "yellow3",
+                               "Train" = "purple") )+
+  stat_summary(fun = "mean",
+               geom = "point",
+               color = "red") +
+  stat_compare_means(label = "p.signif", method = "t.Validation") +
+  facet_wrap(Mesearement~., scales='free') + 
+    theme_bw()
+#dev.off()
+```
+
+##### Comapring the difference in clinical measures between train and Validation datasets (startified by Train/Validation & Dxj).
+```{r  facet box plotstartified by Train/Validation& Dxj, fig.height = 60, fig.width = 40}
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet$recentDxJ_dxCode [Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet$recentDxJ_dxCode!="ASD"] <- 
+  "nonASD"
+#pdf("./Viz/ImportantCols4checkingtheDiffValidation.pdf", height = 60, width = 40)
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet %>%
+  filter(!is.na(recentDxJ_dxCode))%>%
+ggplot(aes(x = recentDxJ_dxCode, y = MesearementValue, color = factor(TrainValidation), fill = factor(TrainValidation))) + 
+  geom_violin(width = 1 , alpha = 0.5) + 
+  geom_boxplot(width = 0.3)  +
+  stat_compare_means(label = "p.signif", method = "t.Validation") +
+  scale_color_manual(values=c("Validation" = "yellow4",
+                               "Train" = "purple4") ) +
+  scale_fill_manual(values=c("Validation" = "yellow3",
+                               "Train" = "purple") )+
+  stat_summary(fun.y=mean,shape=20, col='red', geom='point', position = position_dodge(width = .75))  +
+  facet_wrap(Mesearement + TrainValidation ~., scales='free') + 
+    theme_bw()
+#dev.off()
+```
+
+##### grouped_ggbetweenstats Train/Validation
+```{r  grouped_ggbetweenstats Train/Validation, fig.height = 25, fig.width = 45}
+#pdf("./Viz/ImportantCols4checkingtheDiffgrouped_ggbetweenstats.pdf", height = 25, width = 45)
+Final.ET.Dataset.AllDetails.ImportantCols4checkingtheDiff.ggplot.friendly.DiscoverySet %>%
+  grouped_ggbetweenstats(
+    x = TrainValidation, 
+    y = MesearementValue, 
+    fill = TrainValidation, p.adjust.method = "none",
+    grouping.var = Mesearement, xlab = "Train/Validation")
+#dev.off()
+```
+
+
+
+

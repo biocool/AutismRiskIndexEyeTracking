@@ -1,0 +1,672 @@
+---
+title: 'Doing Machine Learning Analysis Including: Outlier detection and removal,
+  Normalization, Cross Validation Using Different Models '
+output:
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE} 
+#knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+## loading libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(skimr)
+library(caret)
+library(ComplexHeatmap)
+library(ggstatsplot)
+library(corrplot)
+library(knitr)
+library(EnvStats)
+library(GGally)
+```
+
+# Fucntion Definition
+
+## Data Preprocessing
+
+### "remove.NearZeroVarFeatures" function
+"remove.NearZeroVarFeatures": Removing features with zero variance 
+```{r remove.NearZeroVarFeatures}
+################################################################################
+#Description=======
+#This function do this preprocessing step on the given Data Frame by calling "nearZeroVar" from the "caret" package: 
+#1- Removing features with zero variance 
+################################################################################
+#INPUT====
+#"ET.data": a data frame which is feature matrix (except calss labels): each row is a feature vector and each column is a feature.
+################################################################################
+#OUTPUT====
+#"ET.data" the input data frame except those features with near to zero variance have been removed.
+################################################################################
+#function definition========
+remove.NearZeroVarFeatures <- function(ET.data)
+{
+
+  #near zero var analysis
+  nzv <- nearZeroVar(ET.data, saveMetrics= TRUE)
+  #View(nzv$nzv)
+  zero_var_features <- sum(nzv$nzv)
+  print("numebr of near zero var features:")
+  print(zero_var_features)
+  ET.data <- ET.data[,!nzv$nzv]
+  return(ET.data)
+}
+
+```
+
+### "do.HighNA.features.elimination" function
+"remove.NearZeroVarFeatures": Removing features with high NA percentage 
+
+```{r}
+################################################################################
+#Description=======
+#This function eliminates all features that have NA percent > thrsh 
+################################################################################
+#INPUT====
+#"ET.data": a data frame which is feature matrix (except calss labels): each row is a feature vector and each column is a feature.
+#"thrsh" the NA precent threshold (default thrsh = 0.8)
+################################################################################
+#OUTPUT====
+#"ET.data.eliminated.highlyNA.features" the input data frame except those features with high NA percentage.
+################################################################################
+#function definition========
+do.HighNA.features.elimination <- function(ET.data, thrsh = 0.8)
+{
+  #the last col is the lable
+  no.of.instances <- (dim(ET.data)[1]) 
+  ET.data.is.na <- apply(ET.data, 2, is.na)
+  no.of.NA.in.features <- colSums(ET.data.is.na)
+  na.percent <- no.of.NA.in.features / no.of.instances
+  #flagging the col that should be removed
+  to.be.removed.features.indices <- (na.percent > thrsh)
+  ET.data.eliminated.highlyNA.features <- ET.data[,!to.be.removed.features.indices]
+  no.of.removed.features <- sum(to.be.removed.features.indices)
+  print("no.of.removed.features:" )
+  print(no.of.removed.features)
+  return(ET.data.eliminated.highlyNA.features)
+}
+
+```
+
+
+### "do.normalization" fucntion 
+
+```{r do.normalization}
+################################################################################
+#Description======
+#This function does the normalization and returns the normalization model for applying on the unseen data (test data). It uses "preProcess" function from caret package.
+################################################################################
+#INPUT====
+#"ET.data": a data frame which is feature matrix (except calss labels): each row is a feature vector and each column is a feature.
+#"normalization.method": method that will pass to the "preProcess" function from caret package (default: normalization.method = "range")
+################################################################################
+#OUTPUT====
+#"res.list" a list of two elements:
+#1-ET.Normalized : Normalized version of the data 
+#2-normalization.model: normalization model for applying on the unseen data (test data)
+################################################################################
+#function definition========
+do.normalization <- function(ET.data, normalization.method = "range")
+{
+  ET.Normalized <- ET.data
+  class.index <- dim(ET.data)[2]
+  normalization.model <- 
+    preProcess(ET.data[,-class.index], 
+               method= normalization.method)
+  ET.Normalized[,-class.index] <- 
+    predict(normalization.model, 
+            ET.data[,-class.index])
+  res.list <- 
+    list(ET.Normalized = ET.Normalized, 
+         normalization.model = normalization.model)
+  return(res.list)
+}
+```
+
+### "do.feature.plotting" function
+"do.feature.plotting": Feature plottig in three different ways
+
+```{r}
+################################################################################
+#Description=======
+#This function does the feature plottig in three different ways by calling "featurePlot" function from the caret package.
+#1- plot = "pairs" (scatter plot)
+#2- plot = "box" (box plot)
+#3- plot = "density" (density plot)
+################################################################################
+#"ET.data": a data frame which is feature matrix: each row is a feature vector and each column is a feature. The last column is the class label. 
+#writing_path_figures": a folder path for writing the vizualizations. This parameter will be passed to other functoins.
+#"strTag": A trsing tag to be added to the file names (figure and processed data) as a kind of identifier. This parameter will be passed to other functoins.
+################################################################################
+#OUTPUT====
+#Void. (No explicit output, writes the plots)
+################################################################################
+#function definition========
+do.feature.plotting <- function(ET.data,  writing_path_figures, strTag)
+{
+  class.index <- dim(ET.data)[2]
+  full.path.4.fig <- paste(writing_path_figures, strTag, ".FeaturePlot.Pairs.pdf", sep = "")
+  pdf(file = full.path.4.fig, width = 80, height = 80 )
+  x <- featurePlot(x = ET.data[,-class.index],
+              y = ET.data$recentDxJ_dxCode,
+              plot = "pairs",
+              auto.key = list(columns = 2))
+  #plot(x)
+  dev.off()
+  featurePlot(x = ET.data[,-class.index],
+              y = ET.data$recentDxJ_dxCode,
+              plot = "pairs",
+              auto.key = list(columns = 2))
+  print("pairs feature plotting has been done!")
+  #plot(x)
+  full.path.4.fig <- paste(writing_path_figures, strTag, "FeaturePlot.box.pdf", sep = "")
+  pdf(file = full.path.4.fig, width = 40, height = 40 )
+  
+  x <- featurePlot(x = ET.data[,-class.index],
+              y = ET.data[,class.index],
+              plot = "box", scales = list(y = list(relation="free"), x = list(rot = 90)),
+              auto.key = list(columns = 2)  )
+  #plot(x)
+  dev.off()
+  #plot(x)
+  featurePlot(x = ET.data[,-class.index],
+              y = ET.data[,class.index],
+              plot = "box", scales = list(y = list(relation="free"), x = list(rot = 90)),
+              auto.key = list(columns = 2)  )
+  print("box feature plotting has been done!")
+  full.path.4.fig <- paste(writing_path_figures, strTag, "FeaturePlot.density.pdf", sep = "")
+  pdf(file = full.path.4.fig, width = 40, height = 40 )
+  
+  x <- featurePlot(x = ET.data[,-class.index],
+              y = ET.data[,class.index],
+              plot = "density",
+              auto.key = list(columns = 2)
+  )
+  #plot(x)
+  dev.off()
+  featurePlot(x = ET.data[,-class.index],
+              y = ET.data[,class.index],
+              plot = "density",
+              auto.key = list(columns = 2))
+  print("density feature plotting has been done!")
+  #plot(x)
+  message("Plotting done!")
+}
+```
+
+### "outlier.detection.and.removal.method" function
+"outlier.detection.and.removal.method": Outlire detection and removal
+```{r outlier.detection.and.removal.method}
+#Description=======
+#This function tries to find and remove outliers in the given Data Frame using three methods: 
+#1- Doing Outlier removal using Cook distance. Those data points that have "Cook.distance > 3 * mean(cooksd)" will be considered as outlier.
+#2-Doing Outlier removal using Rosner’s test: If an instance be outlier in more than 10 percent of the features it will be considered as outlier.
+#3-Doing Outlier removal using Hampel filter: If an instance be outlier in more than 10 percent of the features it will be considered as outlier.
+################################################################################
+#INPUT====
+#"ET.data": a data frame which is feature matrix: each row is a feature vector and each column is a feature. The last column is the class label. 
+#"writing_path_data": a folder path for writing the processed data and results in. This parameter will be passed to other functoins.
+#writing_path_figures": a folder path for writing the vizualizations. This parameter will be passed to other functoins.
+#"strTag": A trsing tag to be added to the file names (figure and processed data) as a kind of identifier. This parameter will be passed to other functoins.
+################################################################################
+#NOTE: this function assumes that there is a column named "recentDxJ_dxCode" with two values: "nonASD", and "ASD"
+################################################################################
+#OUTPUT====
+#"ET.data": outlier removed version of the input data
+################################################################################
+#function definition========
+
+outlier.detection.and.removal.method <- function(ET.data, writing_path_data, writing_path_figures, strTag )
+{
+  warning("This function does plotting based on only complete cases")
+  ET.data <- 
+    na.omit(ET.data)
+#Cook distance===================================================================
+ 
+  print("Doing Outlier removal using Cook distance")
+  #for using cooks distance outlier removal, it is needed to have a fitted linear regression model.
+  #so first we should convert the classes to numeric classes and then fit an lm model
+  data_4_lm_fitting <- ET.data
+  data_4_lm_fitting$recentDxJ_dxCode <-  as.character(data_4_lm_fitting$recentDxJ_dxCode)
+  data_4_lm_fitting$recentDxJ_dxCode[data_4_lm_fitting$recentDxJ_dxCode == "nonASD"] <- 0
+  data_4_lm_fitting$recentDxJ_dxCode[data_4_lm_fitting$recentDxJ_dxCode == "ASD"] <- 1  
+  print("Fitting linear model")
+  lm_fitted_model <- 
+    lm(recentDxJ_dxCode ~. , data = data_4_lm_fitting)
+  #coock distance is a multivariate method=======
+  print("computing  cooks.distance ")
+  cooksd <- cooks.distance(lm_fitted_model)
+  influential <- cooksd[(cooksd > (3 * mean(cooksd, na.rm = TRUE)))]
+
+  influential_instances <- names(influential)
+  not_influential_instances <- !(rownames(ET.data) %in% influential_instances)
+  ET.data <- ET.data[not_influential_instances,]
+  message(paste("The number of removed outliers based on coocks distance: ", 
+                as.character(length(influential_instances))))
+  
+  #writing the outlier removal to H.D.D
+  file.name.4.writing <- paste(writing_path_data, strTag, "Influential.based.on.coocks.dist.csv", sep = "")
+  write.csv(influential, file = file.name.4.writing)
+  
+  # full.path.4.fig <- paste(writing_path_figures, strTag, "Influential.based.on.coocks.dist.pdf", sep = "")
+  # print("Plotting cooks distance results")
+  # pdf(full.path.4.fig)
+  # #plot(cooksd, pch="*", cex=2, main="Influential Obs by Cooks distance") # plot cook's distance
+  # abline(h = 3*mean(cooksd, na.rm=T), col="red") # add cutoff line
+  # text(x=1:length(cooksd)+1, y=cooksd, labels=ifelse(cooksd > 3*mean(cooksd, na.rm=T),names(cooksd),""), col="red")
+  # 
+  # dev.off()
+  
+  #saving 4 panel figure as a summarizer of the fitted lm model
+  print("saving 4 panel figure as a summarizer of the fitted lm model")
+  full.path.4.fig <- paste(writing_path_figures, strTag, "lmFitted.dist.pdf", sep = "")
+  pdf(full.path.4.fig)
+  par(mfrow = c(2, 2))
+  plot(lm_fitted_model)
+  dev.off()
+  
+  # par(mfrow = c(2, 2))
+  # plot(lm_fitted_model)
+  #Rosner’s test===================================================================
+  print("Rosner’s test")
+  #k is the number of expected outlier 
+  #this is univarate method
+  #-1 : droping the class
+  no.of.features <- (dim(ET.data)[2])-1
+  no.of.instances <- (dim(ET.data)[1])
+  #applying Rosner’s test based on each feature 
+  outlier.multi.set <- c()
+  for (i in c(1:no.of.features)) 
+  {
+    test <- rosnerTest(ET.data[,i], k = 10 )
+    outlier_index <- test$all.stats$Obs.Num[which(test$all.stats$Outlier == TRUE)]
+    new.outlier.instances <- row.names(ET.data)[outlier_index]
+    outlier.multi.set <- c(outlier.multi.set, new.outlier.instances)
+  }
+  
+  outlier.fer.based.on.Rosners.test <- as.data.frame(table(outlier.multi.set))
+  colnames(outlier.fer.based.on.Rosners.test) <- c("SubjectId","Freq")
+  file.name.4.writing <- paste(writing_path_data, strTag, ".OutlierRosners.test.csv", sep = "")
+  
+  
+  #If an instance be outlier in more than 10 percent of the features it will be considered as outlier
+  thrsh.4.considernig.as.outLier <- round(0.10*(no.of.features))
+  index4outliers<- outlier.fer.based.on.Rosners.test$Freq>= thrsh.4.considernig.as.outLier
+  outLierSubjIDs.Rosners.test <-outlier.fer.based.on.Rosners.test$SubjectId[index4outliers]
+  not.OutlierInstances <- !(rownames(ET.data) %in% outLierSubjIDs.Rosners.test)
+  write.csv(outLierSubjIDs.Rosners.test, file = file.name.4.writing)
+  ET.data <- ET.data[not.OutlierInstances,]
+  #ET.data <- ET.data[not.OutlierInstances,]
+  message(paste("The number of removed outliers based on Rosner’s test: ", 
+                as.character(length(outLierSubjIDs.Rosners.test))))
+   #Hampel filter===================================================================
+  print("Hampel filter")
+  outlier.multi.set <- c()
+  #Removing NA values
+  ET.data <- 
+    na.omit(ET.data)
+  for (i in c(1:no.of.features)) 
+  {
+    lower_bound <- median(ET.data[,i]) - 3 * mad(ET.data[,i], constant = 1)
+    upper_bound <- median(ET.data[,i]) + 3 * mad(ET.data[,i], constant = 1)
+    outlier_ind <- which(ET.data[,i] < lower_bound | ET.data[,i] > upper_bound)
+    outLierSubjects <- rownames(ET.data)[outlier_ind]
+    outlier.multi.set <- c(outlier.multi.set, outLierSubjects)
+  }
+  outlier.based.on.Hampel.filter <- as.data.frame(table(outlier.multi.set))
+  
+  colnames(outlier.based.on.Hampel.filter) <- c("SubjectId","Freq")
+  #View(outlier.based.on.Hampel.filter)
+  file.name.4.writing <- paste(writing_path_data, strTag, ".OutlierHampel.Filter.csv", sep = "")
+  #If an instance be outlier in more than 10 percent of the features it will be considered as outlier
+  thrsh.4.considernig.as.outLier <- round(0.10*(no.of.features))
+  index4outliers<- outlier.based.on.Hampel.filter$Freq>= thrsh.4.considernig.as.outLier
+  outLierSubjIDs.Hampel.filter <- outlier.based.on.Hampel.filter$SubjectId[index4outliers]
+  not.OutlierInstances <- !(rownames(ET.data) %in% outLierSubjIDs.Hampel.filter)
+  ET.data <- ET.data[not.OutlierInstances,]
+  write.csv(outLierSubjIDs.Hampel.filter, file = file.name.4.writing)
+  message(paste("The number of removed outliers based on Hampel Filter: ", 
+                as.character(length(outLierSubjIDs.Hampel.filter))))
+  message("Outlier Removal Done!!")
+  #===========
+  return(ET.data)
+}
+
+```
+
+### "do.corr.plotting" function
+Correlation plots
+```{r do.corr.plotting}
+#Description=======
+#This function makes correlation plots using corrplot package in three different ways: 
+#1- corr.mixed 
+#2- heat map
+#3- corrplot pie
+################################################################################
+#INPUT====
+#"ET.data": a data frame which is feature matrix: each row is a feature vector and each column is a feature. The last column is the class label. 
+#writing_path_figures": a folder path for writing the vizualizations. This parameter will be passed to other functoins.
+#"strTag": A trsing tag to be added to the file names (figure and processed data) as a kind of identifier. This parameter will be passed to other functoins.
+################################################################################
+#NOTE====
+#This function does the corrploting using the complete cases (rwos without NA)
+################################################################################
+#OUTPUT====
+#Void. (No explicit output, writes the plots)
+################################################################################
+#function definition========
+do.corr.plotting <- function(ET.data, writing_path_figures, strTag)
+{
+  class.index <- dim(ET.data)[2]
+  data.4.corr.plot <- ET.data[,-class.index]
+  warning("This function does plotting based on only complete cases")
+  data.4.corr.plot <- na.omit(data.4.corr.plot)
+  data.4.corr.plot.cor.matrix <- cor(data.4.corr.plot)
+  data.4.corr.plot.cor.matrix <- as.matrix(data.4.corr.plot.cor.matrix)
+  #corr.mixed ====================================================================
+  full.path.4.fig <- paste(writing_path_figures, strTag, "FeaturePlot.CorrPlotMix.pdf", sep = "")
+  pdf(file = full.path.4.fig, width = 40, height = 40 )
+  corrplot.mixed(data.4.corr.plot.cor.matrix,  cl.cex = 0.5)
+  dev.off()
+  #corrplot.mixed(data.4.corr.plot.cor.matrix, cl.cex = 0.5)
+  #heat map ====================================================================
+  full.path.4.fig <- paste(writing_path_figures, strTag, "HeatMap.pdf", sep = "")
+  pdf(file = full.path.4.fig, width = 40, height = 40 )
+  heatmap(data.4.corr.plot.cor.matrix)
+  dev.off()
+  heatmap(data.4.corr.plot.cor.matrix)
+  #heatmap(data.4.corr.plot.cor.matrix)
+  #corrplot pie ====================================================================
+  full.path.4.fig <- paste(writing_path_figures, strTag, "FeaturePlot.CorrPlotwithClusters.pdf", sep = "")
+  pdf(file = full.path.4.fig, width = 40, height = 40 )
+  corrplot( data.4.corr.plot.cor.matrix, method = 'pie', 
+            type="upper", diag=FALSE, 
+            tl.cex = 0.5, tl.col = "black", 
+            tl.srt = 45, outline = TRUE, cl.cex = 0.5,
+            order = "hclust", hclust.method = "complete")
+  dev.off()
+  corrplot( data.4.corr.plot.cor.matrix, method = 'pie', 
+            type="upper", diag=FALSE, 
+            tl.cex = 0.5, tl.col = "black", 
+            tl.srt = 45, outline = TRUE, cl.cex = 0.5,
+            order = "hclust", hclust.method = "complete")
+
+  # corrplot( data.4.corr.plot.cor.matrix, method = 'pie', 
+  #           type="upper", diag=FALSE, tl.cex = 0.5, tl.col = "black", tl.srt = 45, outline = TRUE, order = "hclust", hclust.method = "complete")
+  # 
+  message("Correlation Plotting is Done!")
+  
+}
+
+```
+
+### "do.preprocessingV2" function
+```{r do.preprocessingV2}
+################################################################################
+#Description=======
+#This function does this preprocessing step on the given Data Frame: 
+#1- Removing features with zero variance by calling "remove.NearZeroVarFeatures" function
+#2- Removing features with high NA precentage by calling "do.HighNA.features.elimination" function
+#3- Normalization features with high NA precentage by calling "do.normalization" function
+#4- Features plotting  by calling "do.feature.plotting" function 
+#5- Plotting correlation matrix by calling "do.corr.plotting" function  
+#6- Outlire detection and removal by calling "outlier.detection.and.removal.method" function 
+#there is another version of this function ("do.preprocessing") that also does two more preprocessing:
+#skimming
+#imputation
+################################################################################
+#INPUT====
+#"ET.data": a data frame which is feature matrix: each row is a feature vector and each column is a feature. The last column is the class label. 
+#"writing_path_data": a folder path for writing the processed data and results in. This parameter will be passed to other functoins.
+#writing_path_figures": a folder path for writing the vizualizations. This parameter will be passed to other functoins.
+#"strTag": A trsing tag to be added to the file names (figure and processed data) as a kind of identifier. This parameter will be passed to other functoins.
+################################################################################
+#NOTE: this function assumes that there is a column named "recentDxJ_dxCode" with two values: "nonASD", and "ASD"
+################################################################################
+#OUTPUT====
+#"preProcessingRes" a list of three elements
+  #"Normalization.model": We can apply this model to do the same normalization on the unseen data (independant test data)
+  #"Normalized.Data": Normalized version of the input data
+  #"Normalized.OutlierRemoved.Data": Normalized and outlier removed version of the input data
+################################################################################
+#function definition========
+do.preprocessingV2 <- function(ET.data, writing_path_data, writing_path_figures, strTag )
+{
+  print("remove.NearZeroVarFeatures")
+  ET.data <- 
+    remove.NearZeroVarFeatures(ET.data = ET.data)#OK!
+  print("do.HighNA.features.elimination")
+  ET.data <- 
+    do.HighNA.features.elimination(ET.data)#OK!
+  print("do.normalization")
+  normalization.res <- 
+    do.normalization(ET.data = ET.data, 
+                     normalization.method = "scale") # Standardize: method = c("center", "scale") or #0-1 Normalize:  method="range" (default)
+  ET.data.Normalized <- 
+    normalization.res[[1]]
+  normalization.model <- 
+    normalization.res[[2]]
+  print("do.feature.plotting")
+  do.feature.plotting(ET.data.Normalized, writing_path_figures, strTag = paste(strTag,"Normalized", sep = ""))#OK!
+  print("do.corr.plotting")
+  #browser()
+  do.corr.plotting(ET.data.Normalized, writing_path_figures, strTag = paste(strTag,"Normalized", sep = ""))#OK
+  print("outlier.detection.and.removal.method")
+  ##NOTE: "outlier.detection.and.removal.method" function assumes that there is a column named "recentDxJ_dxCode" with two values: "nonASD", and "ASD"
+  Normalized.OutlierRemoved.Data <- 
+    outlier.detection.and.removal.method(ET.data.Normalized, writing_path_data, writing_path_figures, strTag = strTag)#OK
+  print("do.feature.plotting after outlier removal")
+  do.feature.plotting(Normalized.OutlierRemoved.Data, writing_path_figures, strTag = paste(strTag,"Outliers.Removed", sep = ""))#OK!
+  print("do.corr.plotting  after outlier removal")
+  do.corr.plotting(Normalized.OutlierRemoved.Data, writing_path_figures, strTag = paste(strTag,"Outliers.Removed", sep = ""))#OK
+  preProcessingRes <- list(
+    Normalization.model = normalization.model,
+    Normalized.Data = ET.data.Normalized,
+    Normalized.OutlierRemoved.Data = Normalized.OutlierRemoved.Data)
+  return(preProcessingRes)
+}
+```
+
+
+# Preprocessing
+
+```{r Final steps for preparing the data to be ready for preprocessing}
+load("./Results/Final.ET.Dataset.AllDetails")
+table(Final.ET.Dataset.AllDetails$recentDxJ_dxCode)
+#replacing anything rather than "ASD" by "nonASD" in the "recentDxJ_dxCode"
+Final.ET.Dataset.AllDetails$recentDxJ_dxCode [Final.ET.Dataset.AllDetails$recentDxJ_dxCode!="ASD"] <- 
+  "nonASD"
+#save(Final.ET.Dataset.AllDetails, file = "./Results/Final.ET.Dataset.AllDetails")
+Final.ET.Dataset.AllDetails.OnlyET.Features <- 
+  Final.ET.Dataset.AllDetails[,c(1:25)]
+#removing age columns
+colnames(Final.ET.Dataset.AllDetails.OnlyET.Features)
+Final.ET.Dataset.AllDetails.OnlyET.Features <-
+  Final.ET.Dataset.AllDetails.OnlyET.Features[,-c(5,9,13,19,25)]
+#adding DxjCode
+Final.ET.Dataset.AllDetails.OnlyET.Features <- cbind(Final.ET.Dataset.AllDetails.OnlyET.Features , 
+      recentDxJ_dxCode = Final.ET.Dataset.AllDetails$recentDxJ_dxCode)
+#assigning SubjectID to the row names and remove that from the features
+rownames(Final.ET.Dataset.AllDetails.OnlyET.Features) <-
+  Final.ET.Dataset.AllDetails.OnlyET.Features$SubjectID
+Final.ET.Dataset.AllDetails.OnlyET.Features <-
+  Final.ET.Dataset.AllDetails.OnlyET.Features[,-1]
+dim(Final.ET.Dataset.AllDetails.OnlyET.Features)
+str(Final.ET.Dataset.AllDetails.OnlyET.Features)
+kable(Final.ET.Dataset.AllDetails.OnlyET.Features[c(1:10),])
+#picking the data
+save(Final.ET.Dataset.AllDetails.OnlyET.Features,
+     file = "./Results/Final.ET.Dataset.AllDetails.OnlyET.Features")
+
+```
+
+Running the preprocessing driver function on the whole data
+```{r calling the preprocessing driver function 1}
+PreprocessedETData <- 
+  do.preprocessingV2(ET.data = Final.ET.Dataset.AllDetails.OnlyET.Features, 
+                   writing_path_data = "./Results/" , 
+                   writing_path_figures = "./Viz/", 
+                   strTag = ".9.6.2022.")
+```
+
+
+
+```{r}
+include_graphics(path = "./Viz/UpsetPlotWithLong.jpg", auto_pdf = TRUE, )
+```
+## Feature plotting 
+#### feature plotting for the original data
+NOTE! Feature plots just for the complete cases
+```{r feature plotting for the original data, message=FALSE}
+ET.data <- 
+  Final.ET.Dataset.AllDetails.OnlyET.Features
+dim(ET.data)
+#Feature plots just for the complete cases
+ET.data <-
+  ET.data[complete.cases(ET.data),]
+dim(ET.data)
+skim(ET.data)
+class.index <-
+  ncol(ET.data)
+
+jpeg("./Viz/featurePlot.ggpair.jpg", height = 5000, width = 5000)
+ET.data %>%
+  ggpairs(mapping = aes(col = recentDxJ_dxCode),
+            upper = list(continuous = "density", size =10)) +
+    theme_bw()
+dev.off()
+include_graphics("./Viz/featurePlot.ggpair.jpg")
+
+```
+
+```{r}
+jpeg("./Viz/featurePlot.ggpair2.jpg", height = 5000, width = 5000)
+ET.data %>%
+  ggpairs( 
+        title="correlation matrix",               
+        mapping= aes(colour = recentDxJ_dxCode), 
+        lower = list(
+          continuous = "smooth",
+          combo = "facetdensity",
+          mapping = aes(color = recentDxJ_dxCode)),
+        upper = list(continuous = wrap("cor", size = 10, hjust=0.8)))+
+    theme_bw()
+dev.off()
+include_graphics("./Viz/featurePlot.ggpair2.jpg")
+```
+#here
+
+#### feature plotting for the normalized data
+```{r feature plotting for the normalized data}
+#Feature plots just for the complete cases
+ET.data <- 
+  PreprocessedETData$Normalized.Data
+class.index <-
+  ncol(ET.data)
+ET.data <-
+  ET.data[complete.cases(ET.data),]
+dim(ET.data)
+skim(ET.data)
+jpeg("./Viz/featurePlot.ggpair2.NormalizedData.jpg", height = 3000, width = 3000)
+ET.data %>%
+  ggpairs( 
+        title="correlation matrix",               
+        mapping= aes(colour = recentDxJ_dxCode), 
+        lower = list(
+          continuous = "smooth",
+          combo = "facetdensity",
+          mapping = aes(color = recentDxJ_dxCode)),
+        upper = list(continuous = wrap("cor", size = 10, hjust=0.8)))+
+    theme_bw()
+dev.off()
+include_graphics("./Viz/featurePlot.ggpair2.NormalizedData.jpg")
+do.corr.plotting(ET.data = PreprocessedETData$Normalized.Data, writing_path_figures = "./Viz/", strTag = "NormalizedData")
+```
+
+
+
+
+
+#### feature plotting for the outlier removed data
+```{r feature plotting for the outlier removed data}
+
+#Feature plots just for the complete cases
+ET.data <- 
+   PreprocessedETData$Normalized.OutlierRemoved.Data
+class.index <-
+  ncol(ET.data)
+ET.data <-
+  ET.data[complete.cases(ET.data),]
+dim(ET.data)
+skim(ET.data)
+jpeg("./Viz/featurePlot.ggpair2.NormalizedDataOutlireRemoved.jpg", height = 5000, width = 5000)
+ET.data %>%
+  ggpairs( 
+        title="correlation matrix",               
+        mapping= aes(colour = recentDxJ_dxCode), 
+        lower = list(
+          continuous = "smooth",
+          combo = "facetdensity",
+          mapping = aes(color = recentDxJ_dxCode)),
+        upper = list(continuous = wrap("cor", size = 10, hjust=0.8)))+
+    theme_bw()
+dev.off()
+include_graphics("./Viz/featurePlot.ggpair2.NormalizedDataOutlireRemoved.jpg")
+do.corr.plotting(PreprocessedETData$Normalized.OutlierRemoved.Data, writing_path_figures = "./Viz/", strTag = "NormalizedDataOutlireRemoved")
+```
+
+running the preprocessing driver function on the training set
+```{r calling the preprocessing driver function}
+#loading the training set
+load("./Results/Final.ET.Dataset.AllDetails.OnlyET.Features.TrainingSet")
+#calling the preprocessing driver function
+PreprocessedETData.TrainingSet <- 
+  do.preprocessingV2(ET.data = Final.ET.Dataset.AllDetails.OnlyET.Features.TrainingSet, 
+                   writing_path_data = "./Results/" , 
+                   writing_path_figures = "./Viz/", 
+                   strTag = ".TrainingSet.9.7.2022.")
+```
+
+Pickling the normalization model (this model should be applied on the validation set)
+```{r}
+save(PreprocessedETData.TrainingSet, file = "./Results/PreprocessedETData.TrainingSet")
+```
+
+
+#### feature plotting for the Training data
+```{r feature plotting for the Training data}
+ET.data.TrainingSet <- 
+   PreprocessedETData.TrainingSet$Normalized.Data
+#Feature plots just for the complete cases
+ET.data <-
+  ET.data.TrainingSet
+class.index <-
+  ncol(ET.data)
+ET.data <-
+  ET.data[complete.cases(ET.data),]
+dim(ET.data)
+#skim(ET.data)
+jpeg("./Viz/featurePlot.ggpair2.PreprocessedETData.TrainingSetNormalized.jpg", height = 5000, width = 5000)
+ET.data %>%
+  ggpairs( 
+        title="correlation matrix",               
+        mapping= aes(colour = recentDxJ_dxCode), 
+        lower = list(
+          continuous = "smooth",
+          combo = "facetdensity",
+          mapping = aes(color = recentDxJ_dxCode)),
+        upper = list(continuous = wrap("cor", size = 10, hjust=0.8)))+
+  scale_fill_manual(values = c("ASD" = "#E7B800", "nonASD" = "#FC4E07")) +
+  scale_color_manual(values = c("ASD" = "#E7B800", "nonASD" = "#FC4E07"))+
+    theme_bw()
+dev.off()
+include_graphics("./Viz/featurePlot.ggpair2.PreprocessedETData.TrainingSetNormalized.jpg")
+do.corr.plotting(ET.data.TrainingSet, writing_path_figures = "./Viz/", strTag = "TrainingSetNormalized")
+
+```
+
+
+
